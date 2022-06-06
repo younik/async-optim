@@ -14,6 +14,13 @@ class AsyncSGD(Optimizer):
        
         super(AsyncSGD, self).__init__(params, defaults)
 
+        numel = sum([p.numel() for p in params])
+        self.average_buffer = torch.zeros(numel, device=params[0].device())
+        self.handler = SimpleNamespace(wait = lambda: None)
+        
+        if asynchronous:
+            self.next_average_buffer = torch.empty_like(self.average_buffer)
+            self.next_handler = None
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -22,32 +29,35 @@ class AsyncSGD(Optimizer):
 
         for group in self.param_groups:
             params_with_grad = []
-            current_grad = []
-            grad_handlers = []
             lr = group['lr']
             asynchronous = group["asynchronous"]
 
+            start_idx = 0
             for p in group['params']:
                 if p.grad is not None:
                     params_with_grad.append(p)
-                    state = self.state[p]
+                    numel = p.grad.numel()
 
-                    p.grad.div_(dist.get_world_size())
                     if not asynchronous:
-                        current_grad.append(p.grad)
-                        grad_handlers.append(dist.all_reduce(p.grad, async_op=True))
+                        self.average_buffer[start_idx : start_idx + numel] = p.grad / dist.get_world_size()
                     else:
-                        if 'next_grad' not in state:
-                            current_grad.append(torch.zeros_like(p))
-                            grad_handlers.append(SimpleNamespace(wait = lambda: None))
-                        else:
-                            assert 'next_grad_handler' in state
-                            current_grad.append(state['next_grad'])
-                            grad_handlers.append(state['next_grad_handler'])
-                            
-                        state['next_grad'] = torch.clone(p.grad)
-                        state["next_grad_handler"] = dist.all_reduce(state['next_grad'], async_op=True)
+                        self.next_average_buffer[start_idx : start_idx + numel] = p.grad / dist.get_world_size()
 
-            for param, grad, handler in zip(params_with_grad, current_grad, grad_handlers):
-                handler.wait()
+                    start_idx += numel
+
+            if not asynchronous:
+                self.handler = dist.all_reduce(self.average_buffer, async_op=True)
+            else:
+                self.next_handler = dist.all_reduce(self.next_average_buffer, async_op=True)
+
+            self.handler.wait()
+            start_idx = 0
+            for param in zip(params_with_grad):
+                numel = param.numel()
+                grad = self.average_buffer[start_idx : start_idx + numel]
                 param.add_(grad, alpha=-lr)
+                start_idx += numel
+
+            if asynchronous:
+                self.average_buffer, self.next_average_buffer = self.next_average_buffer, self.average_buffer
+                self.handler, self.next_handler = self.next_handler, self.handler
