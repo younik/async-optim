@@ -1,0 +1,41 @@
+apiVersion: run.ai/v1
+kind: RunaiJob
+metadata:
+  name: oyounis-powersgd-async
+  labels:
+    user: oyounis
+spec:
+  ports:
+    -name: "8888"
+    port: 8888
+    targetPort: 8888
+  template:
+    metadata:
+      labels:
+        user: oyounis # User e.g. firstname.lastname
+    spec:	
+      hostIPC: true
+      schedulerName: runai-scheduler
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 252255 # insert uid found in people.epfl in administrative data
+        runAsGroup: 30034 # insert gid as found in people.epfl in administrative data
+        fsGroup: 30034
+      containers:
+      - name: container-name
+        image: ic-registry.epfl.ch/mlo/powersgd-async
+        workingDir : /home/oyounis
+        command: ["/bin/bash"]
+        args:
+        - "-c"
+        - "sleep infinity"
+        resources:
+          limits:
+            nvidia.com/gpu: 4
+        volumeMounts:
+          - mountPath: /mlodata1
+            name: mlodata1
+      volumes:
+        - name: mlodata1
+          persistentVolumeClaim:
+            claimName: runai-pv-mlodata1
