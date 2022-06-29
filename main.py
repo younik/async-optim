@@ -1,3 +1,4 @@
+from typing import List
 import torch
 import torch.nn as nn
 import torchvision
@@ -8,6 +9,9 @@ import numpy as np
 import plotly.express as px
 import pandas as pd
 from train import train
+from models import vgg19
+import torchvision.datasets
+import torchvision.transforms as T
 
 import argparse
 import os
@@ -15,32 +19,44 @@ import wandb
 
 torch.manual_seed(42);
 
-project_name = "AsyncSGD"
+project_name = "SLURM Timing"
 parser = argparse.ArgumentParser(description='PowerSGD experiments')
-parser.add_argument('--epochs', default=20, type=int, help='number of epochs per train')
+parser.add_argument('--epochs', default=150, type=int, help='number of train epochs')
 parser.add_argument('--total-batch-size', default=128, type=int, help='batch size')
-parser.add_argument('--start-lr', default=0.1, type=float, help='first learning rate')
-parser.add_argument('--tune-lr', default=True, type=bool, help='tune learning rate')
+parser.add_argument('--start-lr', default=0.2, type=float, help='first learning rate')
+parser.add_argument('--tune-lr', default=False, type=bool, help='tune learning rate')
+parser.add_argument('--tune-epochs', default=200, type=int, help='number of epochs for tuning')
+parser.add_argument('--lr-drop-epochs', default=[150, 175], type=List, help='Epochs at which drop the lr')
+
 
 dist_url = 'tcp://127.0.0.1:58472'
 world_size = torch.cuda.device_count()
 
 models = {
-    'ResNet18': lambda : nn.Sequential(
-        torchvision.models.resnet18(pretrained = False),
-        nn.ReLU(),
-        nn.Linear(1000, 37),
-    )
+    'VGG19': vgg19
 }
 
 optimizers = {
-    "sgd": lambda param, lr : AsyncSGD(param, lr=lr, asynchronous=False),
-    "async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, asynchronous=True),
-    "powersgd-async": lambda param, lr: PowerSGDOptimizer(param, optimizer=SGD, lr=lr)
+    "sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=0.9, weight_decay=1e-4, asynchronous=False),
+    "async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=0.9, weight_decay=1e-4, asynchronous=True),
+    "powersgd-async": lambda param, lr: PowerSGDOptimizer(param, optimizer=SGD, lr=lr, momentum=0.9, weight_decay=1e-4)
 }
+
+datasets = {
+    "cifar10": torchvision.datasets.CIFAR10
+}
+
+transform = T.Compose([
+     T.ToTensor(),
+     T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
 
 
 def main(device):
+    if device == 0:
+        os.system('wandb login eb458e621dd4d01128d5e91ef26c84ddcc82a24e')
+        wandb.init(project=project_name, entity="younis", sync_tensorboard=True)
+
     args = parser.parse_args()
     args.world_size = world_size
     torch.cuda.set_device(device)
@@ -51,31 +67,35 @@ def main(device):
     for name, model_f in models.items():
         losses = []
         val_losses = []
+        best_accuracies = []
         time_list = []
         best_lrs = []
 
 
-        for optimizer_f in optimizers.values():
-            loss_path, val_loss, times, best_lr = train(model_f, optimizer_f, device, args)
+        for optimizer_name, optimizer_f in optimizers.items():
+            args.log_dir = f'./log/{optimizer_name}'
+            train_loader, val_loader = _make_loaders(datasets['cifar10'], args.batch_size)
+
+            loss_path, val_loss, accuracy, times, best_lr = train(model_f, optimizer_f, train_loader, val_loader, device, args)
             losses.append(loss_path)
             val_losses.append(val_loss)
+            best_accuracies.append(accuracy)
             time_list.append(times)
             best_lrs.append(best_lr)
 
 
         if device == 0:
-            os.system('wandb login eb458e621dd4d01128d5e91ef26c84ddcc82a24e')
-            wandb.init(project=project_name, entity="younis")
-
             keys = [f"{optim_name} lr={lr}" for optim_name, lr in zip(optimizers.keys(), best_lrs)]
             xs = list(range(args.epochs))
-            time_xs = [np.sum(t, axis=1).cumsum() for t in time_list]
+            time_xs = [np.cumsum( np.max([t[:, 3], t[:, 0] + t[:, 1]], axis=0) + t[:, 2] ) 
+                       for t in time_list
+                       ]
             wandb.log({
                 f"loss-b{args.batch_size}-{name}" : wandb.plot.line_series(
                                 xs=xs, 
                                 ys=losses,
                                 keys=keys,
-                                title=f"{name} loss (batch_size = {args.batch_size})",
+                                title=f"{name} loss (batch_size = {args.total_batch_size})",
                                 xname="epochs"
                             )
                 })
@@ -85,7 +105,7 @@ def main(device):
                                 xs=time_xs, 
                                 ys=losses,
                                 keys=keys,
-                                title=f"{name} loss (batch_size = {args.batch_size})",
+                                title=f"{name} loss (batch_size = {args.total_batch_size})",
                                 xname="time"
                             )
                 })
@@ -95,13 +115,23 @@ def main(device):
                                   xs=xs, 
                                   ys=val_losses,
                                   keys=keys,
-                                  title=f"{name} val loss (batch_size = {args.batch_size})",
+                                  title=f"{name} val loss (batch_size = {args.total_batch_size})",
+                                  xname="epochs"
+                              )
+                })
+
+            wandb.log({
+                  f"accuracy-b{args.batch_size}-{name}" : wandb.plot.line_series(
+                                  xs=xs, 
+                                  ys=best_accuracies,
+                                  keys=keys,
+                                  title=f"{name} Accuracy (batch_size = {args.total_batch_size})",
                                   xname="epochs"
                               )
                 })
 
             
-            phase_names = ["forward", "backward", "step"]
+            phase_names = ["forward", "backward", "step", "communication"]
             values = np.array([np.mean(t, axis=0) for t in time_list])
             df = pd.DataFrame(values, columns=phase_names, index=list(optimizers.keys()))
             fig = px.bar(df, y=phase_names, title="Times")
@@ -109,6 +139,16 @@ def main(device):
             wandb.log({"times-chart": fig})
 
 
+def _make_loaders(dataset, batch_size):
+    train_set = dataset('./datasets/', train=True, transform=transform, download=True)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, pin_memory=True, sampler=train_sampler)
+    
+    val_set = dataset('./datasets/', train=False, transform=transform, download=True)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_set)
+    val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, pin_memory=True, sampler=val_sampler)
+
+    return train_loader, val_loader
 
 if __name__ == "__main__":
     torch.multiprocessing.spawn(main, nprocs=world_size)

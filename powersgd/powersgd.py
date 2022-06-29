@@ -59,7 +59,7 @@ class PowerSGD(Aggregator):
         )
         self._allreduce = AllReduce()
 
-    def aggregate(self, gradients: List[torch.Tensor]) -> List[torch.Tensor]:
+    def aggregate(self, gradients: List[torch.Tensor], timing=None) -> List[torch.Tensor]:
         self.step_counter += 1
 
         if self.step_counter <= self.config.start_compressing_after_num_steps:
@@ -67,7 +67,7 @@ class PowerSGD(Aggregator):
 
         compressed_grads, uncompressed_grads = self._split(gradients)
         return self._merge(
-            self._powersgd.aggregate(compressed_grads),
+            self._powersgd.aggregate(compressed_grads, timing=timing),
             self._allreduce.aggregate(uncompressed_grads),
         )
 
@@ -141,7 +141,7 @@ class BasicPowerSGD(Aggregator):
         )
         self._qs = unpack(self._qs_buffer, qs_shapes)
 
-    def aggregate(self, gradients: List[torch.Tensor]) -> List[torch.Tensor]:
+    def aggregate(self, gradients: List[torch.Tensor], timing=None) -> List[torch.Tensor]:
         """
         Create a low-rank approximation of the average gradients by communicating with other workers.
         Modifies its inputs so that they contain the 'approximation error', used for the error feedback
@@ -218,8 +218,11 @@ class BasicPowerSGD(Aggregator):
                 self.error[start_idx : start_idx + mb.numel()] = mb.view(-1)
                 start_idx += mb.numel()
 
+        timing[0].record() #
         self.error_handler = allreduce_average(self.error, async_op=True)
-        
+        self.error_handler.wait() #
+        timing[1].record() #
+
         # Increment the step counter
         self.step_counter += 1
 

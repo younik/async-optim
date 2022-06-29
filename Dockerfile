@@ -42,6 +42,7 @@ RUN apt-get install -y \
         git \
         screen \
         tmux
+
 RUN apt-get install -y openssh-server
 # install good vim.
 RUN curl http://j.mp/spf13-vim3 -L -o - | sh
@@ -108,10 +109,13 @@ RUN pip install tqdm
 RUN pip install matplotlib
 RUN pip install plotly
 RUN pip install pandas
+RUN pip install tensorboard
+RUN apt-get install nano
 
 COPY main.py .
 COPY async_sgd.py .
 COPY train.py .
+COPY models.py .
 COPY powersgd/. powersgd/.
 
 # ENTRYPOINT ["sudo", "conda", "run", "--no-capture-output", "-n", "myenv", "python", "main.py"]

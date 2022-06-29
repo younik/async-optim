@@ -1,7 +1,7 @@
 apiVersion: run.ai/v1
 kind: RunaiJob
 metadata:
-  name: oyounis-powersgd-async
+  name: oyounis-async-accuracy-m
   labels:
     user: oyounis
 spec:
@@ -31,7 +31,7 @@ spec:
         - "sleep infinity"
         resources:
           limits:
-            nvidia.com/gpu: 4
+            nvidia.com/gpu: 1
         volumeMounts:
           - mountPath: /mlodata1
             name: mlodata1

@@ -1,11 +1,12 @@
 import torch
+from torch.optim import Optimizer
 from torch.optim.optimizer import required
 
 
 from powersgd.powersgd import Aggregator, AllReduce, Config, PowerSGD
 from powersgd.utils import params_in_optimizer
 
-class PowerSGDOptimizer:
+class PowerSGDOptimizer(Optimizer):
     def __init__(self, params, optimizer=required, powersgd_config=None, **kwargs):
         if powersgd_config is None:
             powersgd_config = Config(
@@ -15,15 +16,17 @@ class PowerSGDOptimizer:
             start_compressing_after_num_steps=0,
         )
 
+        defaults = dict(optimizer=optimizer, powersgd_config=powersgd_config, **kwargs)
         self.params = list(params)
+        super(PowerSGDOptimizer, self).__init__(self.params, defaults)
         self.optimizer = optimizer(self.params, **kwargs)
         self.powersgd = PowerSGD(self.params, config=powersgd_config)
 
 
-    def step(self):
+    def step(self, timing=None):
         grads = [p.grad for p in self.params]  # type: ignore
 
-        self.powersgd.aggregate(grads)  # subtracts the approximation from grads
+        self.powersgd.aggregate(grads, timing=timing)  # subtracts the approximation from grads
 
         # Run an optimizer step
         self.optimizer.step()
