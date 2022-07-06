@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Dict, List, NamedTuple, Union
 
 import torch
@@ -33,7 +34,8 @@ class Config(NamedTuple):
     rank: int  # lower rank => more aggressive compression
     min_compression_rate: float = 2  # skip compression on some gradients
     num_iters_per_step: int = 1  # lower number => more aggressive compression
-    start_compressing_after_num_steps: int = 100
+    start_compressing_after_num_steps: int = 100,
+    async_error: bool = False
 
 
 class PowerSGD(Aggregator):
@@ -203,8 +205,21 @@ class BasicPowerSGD(Aggregator):
         if not hasattr(self, 'error'):
             total_size = sum([g.numel() for g in gradients])
             self.error = torch.zeros(total_size, device=self.device)
+            self.reduce_window = self.error
+            self.start_window_pos = 0
         else:
             assert hasattr(self, 'error_handler')
+            window_size = self.reduce_window.numel()
+            if not self.error_handler.is_completed():
+                print("Reducing by half window size of", window_size)
+                window_size = - (window_size // -2) # ceil division
+            
+            self.start_window_pos += self.reduce_window.numel()
+            if self.start_window_pos >= self.error.numel():
+                self.start_window_pos = 0
+            end_pos = min(self.start_window_pos + window_size, self.error.numel())
+            self.reduce_window = self.error[self.start_window_pos : end_pos]
+
             self.error_handler.wait()
         
         start_idx = 0
@@ -219,8 +234,10 @@ class BasicPowerSGD(Aggregator):
                 start_idx += mb.numel()
 
         timing[0].record() #
-        self.error_handler = allreduce_average(self.error, async_op=True)
-        self.error_handler.wait() #
+        if self.config.async_error:
+            self.error_handler = allreduce_average(self.reduce_window, async_op=True)
+        else:
+            self.error_handler = SimpleNamespace(wait = lambda: None)
         timing[1].record() #
 
         # Increment the step counter

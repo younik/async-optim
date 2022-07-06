@@ -19,27 +19,31 @@ import wandb
 
 torch.manual_seed(42);
 
-project_name = "SLURM Timing"
+project_name = "Accuracy tuning"
 parser = argparse.ArgumentParser(description='PowerSGD experiments')
-parser.add_argument('--epochs', default=150, type=int, help='number of train epochs')
-parser.add_argument('--total-batch-size', default=128, type=int, help='batch size')
+parser.add_argument('--epochs', default=200, type=int, help='number of train epochs')
+parser.add_argument('--total-batch-size', default=1024, type=int, help='batch size')
+parser.add_argument('--momentum', default=0, type=float, help='momentum value')
+parser.add_argument('--weight_decay', default=1e-4, type=float, help='momentum value')
 parser.add_argument('--start-lr', default=0.2, type=float, help='first learning rate')
-parser.add_argument('--tune-lr', default=False, type=bool, help='tune learning rate')
+parser.add_argument('--tune-lr', default=True, type=bool, help='tune learning rate')
 parser.add_argument('--tune-epochs', default=200, type=int, help='number of epochs for tuning')
 parser.add_argument('--lr-drop-epochs', default=[150, 175], type=List, help='Epochs at which drop the lr')
+args = parser.parse_args()
 
 
 dist_url = 'tcp://127.0.0.1:58472'
-world_size = torch.cuda.device_count()
+args.world_size = torch.cuda.device_count()
 
 models = {
     'VGG19': vgg19
 }
 
 optimizers = {
-    "sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=0.9, weight_decay=1e-4, asynchronous=False),
-    "async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=0.9, weight_decay=1e-4, asynchronous=True),
-    "powersgd-async": lambda param, lr: PowerSGDOptimizer(param, optimizer=SGD, lr=lr, momentum=0.9, weight_decay=1e-4)
+    "sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=False),
+    "async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=True),
+    "powersgd": lambda param, lr: PowerSGDOptimizer(param, async_error=False, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
+    "powersgd-async": lambda param, lr: PowerSGDOptimizer(param, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay)
 }
 
 datasets = {
@@ -57,13 +61,10 @@ def main(device):
         os.system('wandb login eb458e621dd4d01128d5e91ef26c84ddcc82a24e')
         wandb.init(project=project_name, entity="younis", sync_tensorboard=True)
 
-    args = parser.parse_args()
-    args.world_size = world_size
     torch.cuda.set_device(device)
     torch.distributed.init_process_group('nccl', init_method=dist_url, rank=device, world_size=args.world_size)
 
     args.batch_size = args.total_batch_size // args.world_size
-
     for name, model_f in models.items():
         losses = []
         val_losses = []
@@ -88,8 +89,8 @@ def main(device):
             keys = [f"{optim_name} lr={lr}" for optim_name, lr in zip(optimizers.keys(), best_lrs)]
             xs = list(range(args.epochs))
             time_xs = [np.cumsum( np.max([t[:, 3], t[:, 0] + t[:, 1]], axis=0) + t[:, 2] ) 
-                       for t in time_list
-                       ]
+                    for t in time_list
+                    ]
             wandb.log({
                 f"loss-b{args.batch_size}-{name}" : wandb.plot.line_series(
                                 xs=xs, 
@@ -111,23 +112,23 @@ def main(device):
                 })
             
             wandb.log({
-                  f"val-loss-b{args.batch_size}-{name}" : wandb.plot.line_series(
-                                  xs=xs, 
-                                  ys=val_losses,
-                                  keys=keys,
-                                  title=f"{name} val loss (batch_size = {args.total_batch_size})",
-                                  xname="epochs"
-                              )
+                f"val-loss-b{args.batch_size}-{name}" : wandb.plot.line_series(
+                                xs=xs, 
+                                ys=val_losses,
+                                keys=keys,
+                                title=f"{name} val loss (batch_size = {args.total_batch_size})",
+                                xname="epochs"
+                            )
                 })
 
             wandb.log({
-                  f"accuracy-b{args.batch_size}-{name}" : wandb.plot.line_series(
-                                  xs=xs, 
-                                  ys=best_accuracies,
-                                  keys=keys,
-                                  title=f"{name} Accuracy (batch_size = {args.total_batch_size})",
-                                  xname="epochs"
-                              )
+                f"accuracy-b{args.batch_size}-{name}" : wandb.plot.line_series(
+                                xs=xs, 
+                                ys=best_accuracies,
+                                keys=keys,
+                                title=f"{name} Accuracy (batch_size = {args.total_batch_size})",
+                                xname="epochs"
+                            )
                 })
 
             
@@ -137,6 +138,8 @@ def main(device):
             fig = px.bar(df, y=phase_names, title="Times")
 
             wandb.log({"times-chart": fig})
+
+            wandb.log(args.__dict__)
 
 
 def _make_loaders(dataset, batch_size):
@@ -151,4 +154,4 @@ def _make_loaders(dataset, batch_size):
     return train_loader, val_loader
 
 if __name__ == "__main__":
-    torch.multiprocessing.spawn(main, nprocs=world_size)
+    torch.multiprocessing.spawn(main, nprocs=args.world_size)

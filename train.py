@@ -94,33 +94,36 @@ def train(model_f, optimizer_f, train_loader, val_loader, device, args):
 
 
   best_lr = args.start_lr
-  # best_losses, best_val_losses, best_accuracies, best_times = train_model(args.start_lr, args.tune_epochs) 
+  best_losses, best_val_losses, best_accuracies, best_times = train_model(args.start_lr, args.tune_epochs) 
 
-  # continue_ = args.tune_lr
-  # while continue_:
-  #   continue_ = False
+  continue_ = args.tune_lr
+  while continue_:
+    continue_ = False
 
-  #   if best_lr <= args.start_lr:
-  #     losses, val_losses, accuracies, times = train_model(best_lr // 2, args.tune_epochs)
-  #     if accuracies[-1] > best_accuracies[-1]:
-  #       continue_ = True
-  #       best_losses, best_val_losses, best_accuracies, best_times, best_lr = losses, val_losses, accuracies, times, best_lr // 2
+    if best_lr <= args.start_lr:
+      losses, val_losses, accuracies, times = train_model(best_lr // 2, args.tune_epochs)
+      if accuracies[-1] > best_accuracies[-1]:
+        continue_ = True
+        best_losses, best_val_losses, best_accuracies, best_times, best_lr = losses, val_losses, accuracies, times, best_lr // 2
 
-  #   if best_lr >= args.start_lr:
-  #     losses, val_losses, accuracies, times = train_model(best_lr * 2, args.tune_epochs)
-  #     if accuracies[-1] > best_accuracies[-1]:
-  #       continue_ = True
-  #       best_losses, best_val_losses, best_accuracies, best_times, best_lr = losses, val_losses, accuracies, times, best_lr * 2
+    if best_lr >= args.start_lr:
+      losses, val_losses, accuracies, times = train_model(best_lr * 2, args.tune_epochs)
+      if accuracies[-1] > best_accuracies[-1]:
+        continue_ = True
+        best_losses, best_val_losses, best_accuracies, best_times, best_lr = losses, val_losses, accuracies, times, best_lr * 2
 
 
-  with torch.profiler.profile(
-        schedule=torch.profiler.schedule(wait=50, warmup=10, active=100, repeat=5),
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(args.log_dir),
-        record_shapes=True,
-        profile_memory=True,
-        with_stack=True,
-        with_modules=True,
-  ) as prof:
-    best_losses, best_val_losses, best_accuracies, best_times = train_model(best_lr, args.epochs, prof) 
-    
+  # if device == 0:
+  #   with torch.profiler.profile(
+  #         schedule=torch.profiler.schedule(wait=50, warmup=10, active=100, repeat=5),
+  #         on_trace_ready=torch.profiler.tensorboard_trace_handler(args.log_dir),
+  #         record_shapes=True,
+  #         profile_memory=True,
+  #         with_stack=True,
+  #         with_modules=True,
+  #   ) as prof:
+  #     best_losses, best_val_losses, best_accuracies, best_times = train_model(best_lr, args.epochs, prof) 
+  # else:
+  best_losses, best_val_losses, best_accuracies, best_times = train_model(best_lr, args.epochs)
+
   return best_losses, best_val_losses, best_accuracies, best_times, best_lr

@@ -67,7 +67,6 @@ class AsyncSGD(Optimizer):
             else:
                 timing[0].record() #
                 self.next_handler = dist.all_reduce(self.next_average_buffer, async_op=True)
-                self.next_handler.wait() #
                 timing[1].record() #
 
             self.handler.wait()
