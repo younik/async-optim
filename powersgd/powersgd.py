@@ -36,6 +36,7 @@ class Config(NamedTuple):
     num_iters_per_step: int = 1  # lower number => more aggressive compression
     start_compressing_after_num_steps: int = 100,
     async_error: bool = False
+    cut: int = 1
 
 
 class PowerSGD(Aggregator):
@@ -57,6 +58,8 @@ class PowerSGD(Aggregator):
             config=BasicConfig(
                 rank=config.rank,
                 num_iters_per_step=config.num_iters_per_step,
+                async_error=config.async_error,
+                cut = config.cut
             ),
         )
         self._allreduce = AllReduce()
@@ -108,7 +111,8 @@ class PowerSGD(Aggregator):
 class BasicConfig(NamedTuple):
     rank: int  # lower rank => more aggressive compression
     num_iters_per_step: int = 1  # lower number => more aggressive compression
-
+    async_error: bool = False
+    cut: int = 1
 
 class BasicPowerSGD(Aggregator):
     def __init__(self, params: List[torch.Tensor], config: BasicConfig):
@@ -146,7 +150,7 @@ class BasicPowerSGD(Aggregator):
     def aggregate(self, gradients: List[torch.Tensor], timing=None) -> List[torch.Tensor]:
         """
         Create a low-rank approximation of the average gradients by communicating with other workers.
-        Modifies its inputs so that they contain the 'approximation error', used for the error feedback
+        Modifies its inputs so that they contaiasync_errorn the 'approximation error', used for the error feedback
         mechanism.
         """
 
@@ -207,6 +211,14 @@ class BasicPowerSGD(Aggregator):
             self.error = torch.zeros(total_size, device=self.device)
             self.reduce_window = self.error
             self.start_window_pos = 0
+
+            window_size = self.reduce_window.numel()
+            for _ in range(self.config.cut - 1):
+                print("Reducing by half window size of", window_size)
+                window_size = - (window_size // -2) # ceil division
+            
+            end_pos = window_size
+            self.reduce_window = self.error[self.start_window_pos : end_pos]
         else:
             assert hasattr(self, 'error_handler')
             window_size = self.reduce_window.numel()
