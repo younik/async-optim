@@ -36,7 +36,6 @@ class Config(NamedTuple):
     num_iters_per_step: int = 1  # lower number => more aggressive compression
     start_compressing_after_num_steps: int = 100,
     async_error: bool = False
-    cut: int = 1
 
 
 class PowerSGD(Aggregator):
@@ -59,7 +58,6 @@ class PowerSGD(Aggregator):
                 rank=config.rank,
                 num_iters_per_step=config.num_iters_per_step,
                 async_error=config.async_error,
-                cut = config.cut
             ),
         )
         self._allreduce = AllReduce()
@@ -72,7 +70,7 @@ class PowerSGD(Aggregator):
 
         compressed_grads, uncompressed_grads = self._split(gradients)
         return self._merge(
-            self._powersgd.aggregate(compressed_grads, timing=timing),
+            self._powersgd.aggregate(compressed_grads, async_error=self.config.async_error, timing=timing),
             self._allreduce.aggregate(uncompressed_grads),
         )
 
@@ -112,16 +110,14 @@ class BasicConfig(NamedTuple):
     rank: int  # lower rank => more aggressive compression
     num_iters_per_step: int = 1  # lower number => more aggressive compression
     async_error: bool = False
-    cut: int = 1
 
 class BasicPowerSGD(Aggregator):
     def __init__(self, params: List[torch.Tensor], config: BasicConfig):
         # Configuration
         self.config = config
-        self.params = list(params)
-        self.device = self.params[0].device
-        self.dtype = self.params[0].dtype
-        self.params_per_shape = self._matrices_per_shape(self.params)
+        self.device = params[0].device
+        self.dtype = params[0].dtype
+        self.error_stream = torch.cuda.Stream()
 
         # State
         self.generator = torch.Generator(device=self.device).manual_seed(0)
@@ -131,10 +127,11 @@ class BasicPowerSGD(Aggregator):
         # _ps_buffer and _qs_buffer are contiguous memory that can be easily all-reduced, and
         # _ps and _qs are pointers into this memory.
         # _ps and _qs represent batches p/q for all tensors of the same shape.
+        params_per_shape = self._matrices_per_shape(params)
         self._ps_buffer, ps_shapes = pack(
             [
                 self._init_p_batch(shape, params)
-                for shape, params in self.params_per_shape.items()
+                for shape, params in params_per_shape.items()
             ]
         )
         self._ps = unpack(self._ps_buffer, ps_shapes)
@@ -142,17 +139,22 @@ class BasicPowerSGD(Aggregator):
         self._qs_buffer, qs_shapes = pack(
             [
                 self._init_q_batch(shape, params)
-                for shape, params in self.params_per_shape.items()
+                for shape, params in params_per_shape.items()
             ]
         )
         self._qs = unpack(self._qs_buffer, qs_shapes)
 
-    def aggregate(self, gradients: List[torch.Tensor], timing=None) -> List[torch.Tensor]:
+    def aggregate(self, gradients: List[torch.Tensor], async_error: bool, timing=None) -> List[torch.Tensor]:
         """
         Create a low-rank approximation of the average gradients by communicating with other workers.
         Modifies its inputs so that they contaiasync_errorn the 'approximation error', used for the error feedback
         mechanism.
         """
+        if timing is None:
+            timing = (
+                SimpleNamespace(record = lambda: None), 
+                SimpleNamespace(record = lambda: None)
+            )
 
         # Group the gradients per shape, and view them as matrices (2D tensors)
         gradients_per_shape = self._matrices_per_shape(gradients)
@@ -163,11 +165,40 @@ class BasicPowerSGD(Aggregator):
                 grad_batch=torch.stack(matrices),
                 approximation=torch.zeros(
                     size=(len(matrices), *shape), device=self.device, dtype=self.dtype
-                ),
+                )
             )
             for shape, matrices in list(gradients_per_shape.items())
         ]
 
+        self.aggregate_loop(shape_groups)
+
+        # Un-batch the approximation and error feedback, write to the output        
+        if not hasattr(self, 'error_batch'):
+            self.error_batch = [
+                torch.zeros(
+                    size=(len(matrices), *shape), device=self.device, dtype=self.dtype
+                )
+            for shape, matrices in list(gradients_per_shape.items())
+            ]
+        elif async_error:
+            torch.cuda.current_stream().wait_stream(self.error_stream)
+        
+        for group, error in zip(shape_groups, self.error_batch):
+            group["grads"][:] = group["approximation"] + error
+            error[:] = group["grad_batch"]
+
+        timing[0].record() #
+        if async_error:
+            self.aggregate_error()
+            #torch.multiprocessing.spawn(self.aggregate_error, join=False)
+        timing[1].record() #
+
+        # Increment the step counter
+        self.step_counter += 1
+
+        return gradients
+
+    def aggregate_loop(self, shape_groups):
         num_iters_per_step = self.config.num_iters_per_step
         for it in range(num_iters_per_step):
             # Alternate between left and right matrix multiplications
@@ -205,57 +236,17 @@ class BasicPowerSGD(Aggregator):
                 del iter_approx
 
 
-        # Un-batch the approximation and error feedback, write to the output        
-        if not hasattr(self, 'error'):
-            total_size = sum([g.numel() for g in gradients])
-            self.error = torch.zeros(total_size, device=self.device)
-            self.reduce_window = self.error
-            self.start_window_pos = 0
+    def aggregate_error(self):
+        with torch.cuda.stream(self.error_stream):
+            shape_groups = [
+                dict(grad_batch=error, approximation=torch.zeros_like(error))
+                for error in self.error_batch
+            ]
 
-            window_size = self.reduce_window.numel()
-            for _ in range(self.config.cut - 1):
-                print("Reducing by half window size of", window_size)
-                window_size = - (window_size // -2) # ceil division
-            
-            end_pos = window_size
-            self.reduce_window = self.error[self.start_window_pos : end_pos]
-        else:
-            assert hasattr(self, 'error_handler')
-            window_size = self.reduce_window.numel()
-            if not self.error_handler.is_completed():
-                print("Reducing by half window size of", window_size)
-                window_size = - (window_size // -2) # ceil division
-            
-            self.start_window_pos += self.reduce_window.numel()
-            if self.start_window_pos >= self.error.numel():
-                self.start_window_pos = 0
-            end_pos = min(self.start_window_pos + window_size, self.error.numel())
-            self.reduce_window = self.error[self.start_window_pos : end_pos]
+            self.aggregate_loop(shape_groups)
 
-            self.error_handler.wait()
-        
-        start_idx = 0
-        for group in shape_groups:
-            for g, approx, mb in zip(
-                group["grads"],
-                group["approximation"],
-                group["grad_batch"],
-            ):
-                g[:] = approx + self.error[start_idx : start_idx + mb.numel()].view_as(g)
-                self.error[start_idx : start_idx + mb.numel()] = mb.view(-1)
-                start_idx += mb.numel()
-
-        timing[0].record() #
-        if self.config.async_error:
-            self.error_handler = allreduce_average(self.reduce_window, async_op=True)
-        else:
-            self.error_handler = SimpleNamespace(wait = lambda: None, is_completed = lambda: True)
-        timing[1].record() #
-
-        # Increment the step counter
-        self.step_counter += 1
-
-        return gradients
+            for group in shape_groups:
+                group["grad_batch"].add_(group["approximation"])
 
     def _init_p_batch(
         self, shape: torch.Size, params: List[torch.Tensor]

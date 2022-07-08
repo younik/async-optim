@@ -19,7 +19,7 @@ import wandb
 
 torch.manual_seed(42);
 
-project_name = "Accuracy tuning - error slices"
+project_name = "PowerSGD Async Stream Compr - Accuracy"
 parser = argparse.ArgumentParser(description='PowerSGD experiments')
 parser.add_argument('--epochs', default=200, type=int, help='number of train epochs')
 parser.add_argument('--total-batch-size', default=1024, type=int, help='batch size')
@@ -40,12 +40,10 @@ models = {
 }
 
 optimizers = {
-    #"sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=False),
+    "sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=False),
     #"async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=True),
-    #"powersgd": lambda param, lr: PowerSGDOptimizer(param, async_error=False, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
-    "powersgd-adapt-2": lambda param, lr: PowerSGDOptimizer(param, cut=2, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
-    "powersgd-async-4": lambda param, lr: PowerSGDOptimizer(param, cut=3, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
-    "powersgd-async-8": lambda param, lr: PowerSGDOptimizer(param, cut=4, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
+    "powersgd": lambda param, lr: PowerSGDOptimizer(param, async_error=False, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
+    "powersgd-async-compr": lambda param, lr: PowerSGDOptimizer(param, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
 }
 
@@ -157,4 +155,5 @@ def _make_loaders(dataset, batch_size):
     return train_loader, val_loader
 
 if __name__ == "__main__":
-    torch.multiprocessing.spawn(main, nprocs=args.world_size)
+    main(0)
+    #torch.multiprocessing.spawn(main, nprocs=args.world_size)
