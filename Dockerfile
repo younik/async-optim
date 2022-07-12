@@ -117,5 +117,6 @@ COPY async_sgd.py .
 COPY train.py .
 COPY models.py .
 COPY powersgd/. powersgd/.
+COPY entrypoint.sh .
 
 # ENTRYPOINT ["sudo", "conda", "run", "--no-capture-output", "-n", "myenv", "python", "main.py"]

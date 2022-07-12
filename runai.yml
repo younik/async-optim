@@ -25,10 +25,11 @@ spec:
       - name: container-name
         image: ic-registry.epfl.ch/mlo/powersgd-async
         workingDir : /home/oyounis
-        command: ["/bin/bash"]
+        command: [
+          "/bin/bash",
+          "entrypoint.sh"
+          ]
         args:
-        - "-c"
-        - "sleep infinity"
         resources:
           limits:
             nvidia.com/gpu: 1
