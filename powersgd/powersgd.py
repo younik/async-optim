@@ -156,23 +156,8 @@ class BasicPowerSGD(Aggregator):
                 SimpleNamespace(record = lambda: None)
             )
 
-        # Group the gradients per shape, and view them as matrices (2D tensors)
         gradients_per_shape = self._matrices_per_shape(gradients)
-        shape_groups = [
-            dict(
-                shape=shape,
-                grads=matrices,
-                grad_batch=torch.stack(matrices),
-                approximation=torch.zeros(
-                    size=(len(matrices), *shape), device=self.device, dtype=self.dtype
-                )
-            )
-            for shape, matrices in list(gradients_per_shape.items())
-        ]
 
-        self.aggregate_loop(shape_groups)
-
-        # Un-batch the approximation and error feedback, write to the output        
         if not hasattr(self, 'error_batch'):
             self.error_batch = [
                 torch.zeros(
@@ -180,12 +165,44 @@ class BasicPowerSGD(Aggregator):
                 )
             for shape, matrices in list(gradients_per_shape.items())
             ]
+
+            self.approximation = [
+                torch.zeros(
+                    size=(len(matrices), *shape), device=self.device, dtype=self.dtype
+                )
+            for shape, matrices in list(gradients_per_shape.items())
+            ]
         elif async_error:
             torch.cuda.current_stream().wait_stream(self.error_stream)
-        
-        for group, error in zip(shape_groups, self.error_batch):
-            group["grads"][:] = group["approximation"] + error
-            error[:] = group["grad_batch"]
+
+        # Group the gradients per shape, and view them as matrices (2D tensors)
+        shape_groups = [
+            dict(
+                shape=shape,
+                grads=matrices,
+                grad_batch=torch.stack(matrices) + error, # you can probably save one-model memory, having grad_batch in error
+                approximation=approx
+            )
+            for (shape, matrices), error, approx in zip(
+                list(gradients_per_shape.items()), 
+                self.error_batch, 
+                self.approximation
+            )
+        ]
+
+        self.aggregate_loop(shape_groups)
+
+
+        for group, error_batch in zip(shape_groups, self.error_batch):
+            for m, approx, mb, error in zip(
+                group["grads"],
+                group["approximation"],
+                group["grad_batch"],
+                error_batch
+            ):
+                m[:] = approx
+                error[:] = mb
+                approx.zero_()
 
         timing[0].record() #
         if async_error:
@@ -237,16 +254,15 @@ class BasicPowerSGD(Aggregator):
 
 
     def aggregate_error(self):
+        self.error_stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self.error_stream):
             shape_groups = [
-                dict(grad_batch=error, approximation=torch.zeros_like(error))
-                for error in self.error_batch
+                dict(grad_batch=error, approximation=approx)
+                for error, approx in zip(self.error_batch, self.approximation)
             ]
 
             self.aggregate_loop(shape_groups)
 
-            for group in shape_groups:
-                group["grad_batch"].add_(group["approximation"])
 
     def _init_p_batch(
         self, shape: torch.Size, params: List[torch.Tensor]
