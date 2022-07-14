@@ -1,7 +1,7 @@
+from types import SimpleNamespace
 import torch
 import torch.nn as nn
 import numpy as np
-from tqdm import tqdm
 
 
 def train(model_f, optimizer_f, train_loader, val_loader, device, args):
@@ -45,25 +45,33 @@ def train(model_f, optimizer_f, train_loader, val_loader, device, args):
     times[2] = start_time_step.elapsed_time(end_time_step) - times[3]
     return loss
 
-  def train_model(lr, epochs, prof=None):
-    if device == 0:
-      print(f"Trying lr = {lr} ...")
+  def init_state(lr, epochs):
     model = make_model()
     optimizer = optimizer_f(model.parameters(), lr)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.lr_drop_epochs)
-    losses = []
-    val_losses = []
-    accuracies = []
-    times = np.empty((epochs, 4))
+    return SimpleNamespace(
+      model = model,
+      optimizer = optimizer,
+      scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.lr_drop_epochs),
+      lr = lr,
+      epoch = 0,
+      losses = [],
+      val_losses = [],
+      accuracies = [],
+      times = np.empty((epochs, 4))
+    )
+
+  def train_model(epochs, state, prof=None):
+    model, optimizer, scheduler = state.model, state.optimizer, state.scheduler
+    losses, val_losses, accuracies, times = state.losses, state.val_losses, state.accuracies, state.times
     
-    for i in range(epochs):
+    for i in range(state.epoch, epochs):
+      print("Epoch:", i)
       epoch_losses = []
       val_loss = torch.zeros(1, device=device)
       epoch_times = np.empty((len(train_loader), 4))
       accuracy = 0
 
-      data_bar = tqdm(train_loader) if device == 0 else train_loader
-      for batch_index, batch_data in enumerate(data_bar):
+      for batch_index, batch_data in enumerate(train_loader):
           loss = train_step(model, batch_data, optimizer, epoch_times[batch_index])
           epoch_losses.append(loss.item())
           if prof is not None:
@@ -88,29 +96,31 @@ def train(model_f, optimizer_f, train_loader, val_loader, device, args):
       torch.distributed.all_reduce(val_loss)
       val_losses.append(val_loss)
 
-      times[i] = np.mean(epoch_times, axis=0)
-    return losses, val_losses, accuracies, times
+      times[state.epoch] = np.mean(epoch_times, axis=0)
+      state.epoch += 1
+    return state
     
 
-
-  best_lr = args.start_lr
-  best_losses, best_val_losses, best_accuracies, best_times = train_model(args.start_lr, args.tune_epochs) 
+  best_state = init_state(args.start_lr, args.epochs)
+  train_model(args.tune_epochs, best_state)
 
   continue_ = args.tune_lr
   while continue_:
     continue_ = False
 
-    if best_lr <= args.start_lr:
-      losses, val_losses, accuracies, times = train_model(best_lr // 2, args.tune_epochs)
-      if accuracies[-1] > best_accuracies[-1]:
+    if best_state.lr <= args.start_lr:
+      state = init_state(best_state.lr // 2, args.epochs)
+      train_model(args.tune_epochs, state)
+      if state.accuracies[-1] > best_state.accuracies[-1]:
         continue_ = True
-        best_losses, best_val_losses, best_accuracies, best_times, best_lr = losses, val_losses, accuracies, times, best_lr // 2
+        best_state = state
 
-    if best_lr >= args.start_lr:
-      losses, val_losses, accuracies, times = train_model(best_lr * 2, args.tune_epochs)
-      if accuracies[-1] > best_accuracies[-1]:
+    if best_state.lr >= args.start_lr:
+      state = init_state(best_state.lr * 2, args.epochs)
+      train_model(args.tune_epochs, state)
+      if state.accuracies[-1] > best_state.accuracies[-1]:
         continue_ = True
-        best_losses, best_val_losses, best_accuracies, best_times, best_lr = losses, val_losses, accuracies, times, best_lr * 2
+        best_state = state
 
 
   # if device == 0:
@@ -124,6 +134,6 @@ def train(model_f, optimizer_f, train_loader, val_loader, device, args):
   #   ) as prof:
   #     best_losses, best_val_losses, best_accuracies, best_times = train_model(best_lr, args.epochs, prof) 
   # else:
-  best_losses, best_val_losses, best_accuracies, best_times = train_model(best_lr, args.epochs)
+  train_model(args.epochs, state = best_state)
 
-  return best_losses, best_val_losses, best_accuracies, best_times, best_lr
+  return best_state.losses, best_state.val_losses, best_state.accuracies, best_state.times, best_state.lr
