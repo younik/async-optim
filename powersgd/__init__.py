@@ -7,7 +7,7 @@ from powersgd.powersgd import Aggregator, AllReduce, Config, PowerSGD
 from powersgd.utils import params_in_optimizer
 
 class PowerSGDOptimizer(Optimizer):
-    def __init__(self, params, async_error=False, optimizer=required, powersgd_config=None, **kwargs):
+    def __init__(self, params, async_error=False, cut=1, optimizer=required, powersgd_config=None, **kwargs):
         if powersgd_config is None:
             powersgd_config = Config(
             rank=1,  # lower rank => more aggressive compression
@@ -15,6 +15,7 @@ class PowerSGDOptimizer(Optimizer):
             num_iters_per_step=2,  # lower number => more aggressive compression
             start_compressing_after_num_steps=0,
             async_error=async_error,
+            cut = cut
         )
 
         defaults = dict(optimizer=optimizer, powersgd_config=powersgd_config, **kwargs)

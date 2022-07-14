@@ -6,13 +6,12 @@ from typing import Iterable
 
 launch_settings = {
     "optimizers": [
-        ["sgd"], 
-        ["async-sgd"], 
-        ["powersgd"], 
-        ["powersgd-async-compr"]
+        #["sgd"], 
+        #["async-sgd"], 
+        #["powersgd-async"], 
     ],
 
-    "start-lr": [0.1, 0.2, 0.4]
+    "start-lr": [0.2]
 }
 
 
@@ -24,7 +23,7 @@ def launch():
     for id, args_values in enumerate(itertools.product(*launch_settings.values())):
         kwargs = {k: v for k, v in zip(launch_settings.keys(), args_values)}
         print(kwargs)
-        create(id, **kwargs)
+        create(id + 1, **kwargs)
 
 def create(id, **kwargs):
     f = tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False)

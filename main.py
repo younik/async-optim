@@ -20,16 +20,16 @@ import wandb
 
 torch.manual_seed(42);
 
-project_name = "Accuracy (keep all lr)"
+project_name = "Accuracy (adapt n of epochs)"
 parser = argparse.ArgumentParser(description='PowerSGD experiments')
-parser.add_argument('--epochs', default=200, type=int, help='number of train epochs')
+parser.add_argument('--epochs', default=710, type=int, help='number of train epochs')
 parser.add_argument('--total-batch-size', default=1024, type=int, help='batch size')
 parser.add_argument('--momentum', default=0, type=float, help='momentum value')
 parser.add_argument('--weight_decay', default=1e-4, type=float, help='momentum value')
 parser.add_argument('--start-lr', default=0.2, type=float, help='first learning rate')
 parser.add_argument('--tune-lr', default=False, type=bool, help='tune learning rate')
-parser.add_argument('--tune-epochs', default=200, type=int, help='number of epochs for tuning')
-parser.add_argument('--lr-drop-epochs', default=[150, 175], type=List, help='Epochs at which drop the lr')
+parser.add_argument('--tune-epochs', default=710, type=int, help='number of epochs for tuning')
+parser.add_argument('--lr-drop-epochs', default=[533, 622], type=List, help='Epochs at which drop the lr')
 parser.add_argument('--optimizers', default=None, nargs='+', help='Filter optimizers to use')
 args = parser.parse_args()
 
@@ -42,10 +42,11 @@ models = {
 }
 
 optimizers = {
-    "sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=False),
-    "async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=True),
-    "powersgd": lambda param, lr: PowerSGDOptimizer(param, async_error=False, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
-    "powersgd-async-compr": lambda param, lr: PowerSGDOptimizer(param, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    #"sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=False),
+    #"async-sgd": lambda param, lr : AsyncSGD(param, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay, asynchronous=True),
+    #"powersgd": lambda param, lr: PowerSGDOptimizer(param, async_error=False, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
+    #"powersgd-async": lambda param, lr: PowerSGDOptimizer(param, async_error=True, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay),
+    "powersgd-async-cut-4": lambda param, lr: PowerSGDOptimizer(param, async_error=True, cut=3, optimizer=SGD, lr=lr, momentum=args.momentum, weight_decay=args.weight_decay)
 }
 
 
